@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from telegram import Update, MessageEntity
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes, Application
+from telegram.ext import ApplicationBuilder, Application, MessageHandler, filters, ContextTypes
 
 load_dotenv()
 
@@ -15,14 +15,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-DATABASE_URL = os.environ.get("DATABASE_URL")
-WINDOW_DAYS = int(os.environ.get("DUPLICATE_WINDOW_DAYS", "30"))
-TEXT_MIN_LEN = int(os.environ.get("TEXT_MIN_LENGTH", "20"))
+TOKEN       = os.environ["TELEGRAM_BOT_TOKEN"]
+DATABASE_URL    = os.environ.get("DATABASE_URL")
+RENDER_URL      = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
+PORT            = int(os.environ.get("PORT", 8080))
+WINDOW_DAYS     = int(os.environ.get("DUPLICATE_WINDOW_DAYS", "30"))
+TEXT_MIN_LEN    = int(os.environ.get("TEXT_MIN_LENGTH", "20"))
 TEXT_MAX_REPEATS = int(os.environ.get("TEXT_MAX_REPEATS", "3"))
 
 # ---------------------------------------------------------------------------
-# Camada de banco de dados — SQLite (local) ou PostgreSQL (nuvem)
+# Banco de dados — SQLite (local/Render) ou PostgreSQL (DATABASE_URL)
 # ---------------------------------------------------------------------------
 
 PH = "%s" if DATABASE_URL else "?"
@@ -72,7 +74,7 @@ if DATABASE_URL:
     logger.info("Banco: PostgreSQL")
 
 else:
-    _DB_PATH = os.path.join(os.path.dirname(__file__), "mensagens.db")
+    _DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "mensagens.db"))
     sqlite3.register_adapter(datetime, lambda d: d.isoformat())
     _sqlite = sqlite3.connect(_DB_PATH, check_same_thread=False)
 
@@ -101,9 +103,7 @@ else:
 
     logger.info("Banco: SQLite — %s", _DB_PATH)
 
-
 _init_db()
-
 
 # ---------------------------------------------------------------------------
 # Operações de banco
@@ -126,12 +126,12 @@ def ja_foi_postado(chat_id: int, conteudo: str) -> bool:
     cutoff = _cutoff()
     if cutoff:
         rows = _query(
-            f"SELECT 1 FROM registros WHERE chat_id = {PH} AND conteudo = {PH} AND criado_em > {PH} LIMIT 1",
+            f"SELECT 1 FROM registros WHERE chat_id={PH} AND conteudo={PH} AND criado_em>{PH} LIMIT 1",
             (chat_id, conteudo, cutoff),
         )
     else:
         rows = _query(
-            f"SELECT 1 FROM registros WHERE chat_id = {PH} AND conteudo = {PH} LIMIT 1",
+            f"SELECT 1 FROM registros WHERE chat_id={PH} AND conteudo={PH} LIMIT 1",
             (chat_id, conteudo),
         )
     return len(rows) > 0
@@ -141,12 +141,12 @@ def contar_ocorrencias(chat_id: int, conteudo: str) -> int:
     cutoff = _cutoff()
     if cutoff:
         rows = _query(
-            f"SELECT COUNT(*) FROM registros WHERE chat_id = {PH} AND conteudo = {PH} AND criado_em > {PH}",
+            f"SELECT COUNT(*) FROM registros WHERE chat_id={PH} AND conteudo={PH} AND criado_em>{PH}",
             (chat_id, conteudo, cutoff),
         )
     else:
         rows = _query(
-            f"SELECT COUNT(*) FROM registros WHERE chat_id = {PH} AND conteudo = {PH}",
+            f"SELECT COUNT(*) FROM registros WHERE chat_id={PH} AND conteudo={PH}",
             (chat_id, conteudo),
         )
     return rows[0][0]
@@ -158,7 +158,6 @@ def limpar_antigos():
         return
     _run(f"DELETE FROM registros WHERE criado_em < {PH}", (cutoff,))
     logger.info("Limpeza: registros anteriores a %s removidos", cutoff.date())
-
 
 # ---------------------------------------------------------------------------
 # Lógica do bot
@@ -186,14 +185,14 @@ async def processar_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     chat_id = message.chat_id
-    nome = (message.from_user.first_name if message.from_user else None) or "Alguém"
-    RODAPE = "Use a pesquisa do grupo para encontrar conteúdo já compartilhado."
+    nome = (message.from_user.first_name if message.from_user else None) or "Alguem"
+    RODAPE = "Use a pesquisa do grupo para encontrar conteudo ja compartilhado."
 
     async def bloquear(aviso: str):
         try:
             await message.delete()
         except Exception as e:
-            logger.warning("Nao foi possivel deletar mensagem %s: %s", message.message_id, e)
+            logger.warning("Nao foi possivel deletar msg %s: %s", message.message_id, e)
         try:
             await context.bot.send_message(
                 chat_id,
@@ -203,7 +202,7 @@ async def processar_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE)
         except Exception as e:
             logger.warning("Nao foi possivel enviar aviso no chat %s: %s", chat_id, e)
 
-    # --- Mensagem encaminhada ---
+    # Mensagem encaminhada
     if message.forward_from or message.forward_from_chat or message.forward_date:
         conteudo = normalizar(message.text or message.caption or "encaminhada")
         duplicado = ja_foi_postado(chat_id, conteudo)
@@ -212,7 +211,7 @@ async def processar_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await bloquear(f"*{nome}*, esse conteudo encaminhado ja foi postado aqui.")
         return
 
-    # --- Mensagem com link ---
+    # Mensagem com link
     if message.text:
         links = extrair_links(message)
         if links:
@@ -224,7 +223,7 @@ async def processar_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     return
             return
 
-    # --- Texto simples (ignora mensagens muito curtas) ---
+    # Texto simples (ignora textos muito curtos)
     if message.text:
         texto = normalizar(message.text)
         if len(texto) < TEXT_MIN_LEN:
@@ -233,32 +232,81 @@ async def processar_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE)
         count = contar_ocorrencias(chat_id, texto)
         if count > TEXT_MAX_REPEATS:
             await bloquear(
-                f"*{nome}*, essa mensagem ja foi enviada {count - 1}x no grupo nos ultimos {WINDOW_DAYS} dias."
+                f"*{nome}*, essa mensagem ja foi enviada {count - 1}x nos ultimos {WINDOW_DAYS} dias."
             )
 
 
 async def _on_startup(app: Application):
     limpar_antigos()
+    modo = "webhook" if RENDER_URL else "polling"
     logger.info(
-        "Bot pronto | janela=%dd | min_len=%d | max_repeats=%d",
-        WINDOW_DAYS, TEXT_MIN_LEN, TEXT_MAX_REPEATS,
+        "Bot pronto | modo=%s | janela=%dd | min_len=%d | max_repeats=%d",
+        modo, WINDOW_DAYS, TEXT_MIN_LEN, TEXT_MAX_REPEATS,
     )
 
 
-def main():
-    app = (
+def _build_ptb() -> Application:
+    ptb = (
         ApplicationBuilder()
         .token(TOKEN)
         .post_init(_on_startup)
         .build()
     )
-    app.add_handler(
+    ptb.add_handler(
         MessageHandler(
             (filters.TEXT | filters.FORWARDED) & ~filters.COMMAND,
             processar_mensagem,
         )
     )
-    app.run_polling()
+    return ptb
+
+# ---------------------------------------------------------------------------
+# Modo webhook (Render) — FastAPI + uvicorn
+# ---------------------------------------------------------------------------
+
+if RENDER_URL:
+    from contextlib import asynccontextmanager
+    from fastapi import FastAPI, Request, Response
+
+    _ptb_instance: Application | None = None
+
+    @asynccontextmanager
+    async def _lifespan(app):
+        global _ptb_instance
+        _ptb_instance = _build_ptb()
+        await _ptb_instance.initialize()
+        await _ptb_instance.bot.set_webhook(f"{RENDER_URL}/webhook")
+        await _ptb_instance.start()
+        yield
+        await _ptb_instance.stop()
+        await _ptb_instance.shutdown()
+
+    fastapi_app = FastAPI(lifespan=_lifespan)
+
+    @fastapi_app.get("/")
+    async def health():
+        return {"status": "ok", "mode": "webhook"}
+
+    @fastapi_app.post("/webhook")
+    async def telegram_webhook(request: Request):
+        body = await request.json()
+        await _ptb_instance.process_update(
+            Update.de_json(body, _ptb_instance.bot)
+        )
+        return Response(status_code=200)
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    if RENDER_URL:
+        import uvicorn
+        logger.info("Iniciando em modo webhook na porta %d", PORT)
+        uvicorn.run(fastapi_app, host="0.0.0.0", port=PORT)
+    else:
+        logger.info("Iniciando em modo polling")
+        _build_ptb().run_polling()
 
 
 if __name__ == "__main__":

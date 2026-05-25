@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: antieco-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    plan: free
+    healthCheckPath: /
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: PYTHON_VERSION
+        value: "3.13.3"
+      - key: DUPLICATE_WINDOW_DAYS
+        value: "30"
+      - key: TEXT_MIN_LENGTH
+        value: "20"
+      - key: TEXT_MAX_REPEATS
+        value: "3"
