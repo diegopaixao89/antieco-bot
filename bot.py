@@ -283,7 +283,7 @@ if RENDER_URL:
 
     fastapi_app = FastAPI(lifespan=_lifespan)
 
-    @fastapi_app.get("/")
+    @fastapi_app.api_route("/", methods=["GET", "HEAD"])
     async def health():
         return {"status": "ok", "mode": "webhook"}
 
