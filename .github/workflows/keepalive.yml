@@ -10,5 +10,5 @@ jobs:
     steps:
       - name: Ping Render
         run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://antieco-bot.onrender.com/)
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://antieco-bot.onrender.com)
           echo "Status: $STATUS"
