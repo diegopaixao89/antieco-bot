@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from telegram import Update, MessageEntity
-from telegram.ext import ApplicationBuilder, Application, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, Application, MessageHandler, CommandHandler, filters, ContextTypes
 
 load_dotenv()
 
@@ -190,10 +190,27 @@ def extrair_links(message) -> list[str]:
     return list(set(links))
 
 
+async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    rows = _query("SELECT COUNT(*) FROM registros")
+    total = rows[0][0] if rows else "?"
+    modo = "PostgreSQL" if DATABASE_URL else "SQLite"
+    await update.message.reply_text(
+        f"pong — banco: {modo} | registros: {total}"
+    )
+
+
+async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.error("Erro no handler: %s", context.error, exc_info=context.error)
+
+
 async def processar_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     if not message:
         return
+    logger.info("MSG recebida: chat=%s tipo=%s texto=%s",
+                message.chat_id,
+                message.chat.type,
+                bool(message.text))
 
     chat_id = message.chat_id
     nome = (message.from_user.first_name if message.from_user else None) or "Alguem"
@@ -263,12 +280,14 @@ def _build_ptb() -> Application:
         .post_init(_on_startup)
         .build()
     )
+    ptb.add_handler(CommandHandler("ping", cmd_ping))
     ptb.add_handler(
         MessageHandler(
             (filters.TEXT | filters.FORWARDED) & ~filters.COMMAND,
             processar_mensagem,
         )
     )
+    ptb.add_error_handler(_error_handler)
     return ptb
 
 # ---------------------------------------------------------------------------
