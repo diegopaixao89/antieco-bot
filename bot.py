@@ -167,15 +167,26 @@ def normalizar(texto: str) -> str:
     return texto.lower().strip()
 
 
+def normalizar_url(url: str) -> str:
+    url = url.lower().strip()
+    for prefix in ("https://", "http://"):
+        if url.startswith(prefix):
+            url = url[len(prefix):]
+            break
+    if url.startswith("www."):
+        url = url[4:]
+    return url.rstrip("/")
+
+
 def extrair_links(message) -> list[str]:
     if not message.entities:
         return []
     links = []
     for entity in message.entities:
         if entity.type == MessageEntity.TEXT_LINK:
-            links.append(normalizar(entity.url))
+            links.append(normalizar_url(entity.url))
         elif entity.type == MessageEntity.URL:
-            links.append(normalizar(message.text[entity.offset: entity.offset + entity.length]))
+            links.append(normalizar_url(message.text[entity.offset: entity.offset + entity.length]))
     return list(set(links))
 
 
